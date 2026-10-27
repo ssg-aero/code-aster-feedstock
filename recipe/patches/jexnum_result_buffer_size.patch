@@ -1,0 +1,28 @@
+diff --git a/bibcxx/DataFields/ElementaryTerm.h b/bibcxx/DataFields/ElementaryTerm.h
+index 70e2357335..9210576701 100644
+--- a/bibcxx/DataFields/ElementaryTerm.h
++++ b/bibcxx/DataFields/ElementaryTerm.h
+@@ -181,7 +181,8 @@ class ElementaryTerm : public DataField {
+         const auto nbGrel = getNumberOfGroupOfCells();
+         _descriptor->updateValuePointer();
+         const std::string cata = "&CATA.TE.NOMMOLOC";
+-        JeveuxChar24 objName, charName;
++        JeveuxChar32 objName;
++        JeveuxChar24 charName;
+ 
+         std::string modeName;
+         for ( auto igr = 0; igr < nbGrel; igr++ ) {
+diff --git a/bibcxx/DataFields/FieldOnCells.h b/bibcxx/DataFields/FieldOnCells.h
+index 04df3c52c5..0bf70aabd6 100644
+--- a/bibcxx/DataFields/FieldOnCells.h
++++ b/bibcxx/DataFields/FieldOnCells.h
+@@ -506,7 +506,8 @@ class FieldOnCells : public DataField {
+         const auto nbGrel = getNumberOfGroupOfElements();
+         _descriptor->updateValuePointer();
+         const std::string cata = "&CATA.TE.NOMMOLOC";
+-        JeveuxChar24 objName, charName;
++        JeveuxChar32 objName;
++        JeveuxChar24 charName;
+ 
+         std::string modeName;
+         for ( auto igr = 0; igr < nbGrel; igr++ ) {
