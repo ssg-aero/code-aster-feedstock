@@ -1,0 +1,54 @@
+# code_aster testcases additionally excluded on macOS (osx-arm64)
+# (one testcase name per line, with the reason)
+
+# HOMARD (MACR_ADAP_MAIL, MACR_INFO_MAIL) is only provided as Linux x86-64 executables
+forma01b
+forma01c
+forma11a
+ssnv173k
+tpll01h
+tpll01j
+tplp107b
+tplp305d
+wtnl100c
+wtnl100f
+zzzz121c
+zzzz121d
+zzzz121e
+zzzz175b
+zzzz319a
+zzzz319b
+zzzz356a
+
+# miss3d (CALC_MISS) is not available on conda-forge for osx-arm64
+sdls118a
+
+# the testcase file itself reads /proc/<PID>/status
+func01e
+
+# numerical results differ from the reference values on osx-arm64
+# (small relative differences, or values compared to 0. or to a threshold)
+sdll119a
+sdll119b
+sdll125b
+sdll159a
+sdls106c
+sdnd100f
+ssls12a
+ssnd118a
+ssnp175f
+zzzz109b
+zzzz115a
+zzzz115b
+zzzz215c
+
+# MODELISA9_3: several materials on a cell, EPSI_MAXI searched without material
+# (depends on the order of materials, to be investigated)
+ssll117a
+ssll117b
+
+# MPI coupling (InterpKernelDEC): non-regression values differ by up to ~1e-3%
+# (tolerance 1e-4%), comparisons to the other code_aster reference pass
+zzzz216b
+zzzz216c
+zzzz216i

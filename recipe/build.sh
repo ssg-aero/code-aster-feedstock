@@ -1,6 +1,9 @@
 #!/bin/bash
 
-bash "${RECIPE_DIR}/build_homard.sh"
+# homard is only provided as Linux x86-64 executables
+if [[ "${target_platform}" == linux-* ]]; then
+  bash "${RECIPE_DIR}/build_homard.sh"
+fi
 
 echo "mpi = ${mpi}"
 
@@ -56,6 +59,19 @@ fi
 echo "Using 64-bit integer type"
 export "DEFINES=${DEFINES} ASTER_INT8"
 
+extra_opts=()
+if [[ "${target_platform}" == osx-* ]]; then
+  # no waf 2.1.5 package for osx: use the engine bundled in the sources
+  waf() { "${PYTHON}" "${SRC_DIR}/waf.engine" "$@"; }
+  # the automatic detection of BLAS/LAPACK (from numpy) requires 'ldd'
+  extra_opts+=(--maths-libs="lapack blas")
+  # MGIS Integrate.hxx uses std::string/std::string_view without including them,
+  # libc++ does not provide them transitively
+  export CXXFLAGS="${CXXFLAGS} -include string"
+  # equivalent of '--as-needed', would drop the libraries needed by libaster
+  export LDFLAGS="${LDFLAGS//-Wl,-dead_strip_dylibs/}"
+fi
+
 
 if [[ "$mpi" == "nompi" ]]; then
 
@@ -78,6 +94,7 @@ if [[ "$mpi" == "nompi" ]]; then
     --disable-mpi \
     --disable-petsc \
     --without-hg \
+    "${extra_opts[@]}" \
     configure
 
     echo "Debugging Disabled"
@@ -112,7 +129,8 @@ else
     --site-packages="${SP_DIR}" \
     --disable-aster-subdir \
     --install-tests \
-    --without-hg
+    --without-hg \
+    "${extra_opts[@]}"
 
   if [[ "${build_type}" == "debug" ]]; then
       waf install_debug
@@ -157,12 +175,20 @@ if [[ "${ASTER_BUILD_TESTS}" != "none" ]]; then
   cat "${RECIPE_DIR}/known_failures.list" > "${known_failures}"
   if [[ "$mpi" == "nompi" ]]; then
     cat "${RECIPE_DIR}/known_failures_nompi.list" >> "${known_failures}"
-  else
+  fi
+  if [[ "${target_platform}" == osx-* ]]; then
+    cat "${RECIPE_DIR}/known_failures_osx.list" >> "${known_failures}"
+  fi
+  if [[ "$mpi" != "nompi" ]]; then
     cat "${RECIPE_DIR}/known_failures_mpi.list" >> "${known_failures}"
   fi
 
   jobs=${CPU_COUNT:-2}
-  mem_mb=$(awk '/MemTotal/ {print int($2 / 1024)}' /proc/meminfo)
+  if [[ "${target_platform}" == osx-* ]]; then
+    mem_mb=$(( $(sysctl -n hw.memsize) / 1048576 ))
+  else
+    mem_mb=$(awk '/MemTotal/ {print int($2 / 1024)}' /proc/meminfo)
+  fi
   ctest_args=(
     --testdir="${SRC_DIR}/astest"
     --resutest="${SRC_DIR}/build_testcases"

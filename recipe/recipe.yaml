@@ -28,15 +28,24 @@ source:
       - patches/numpy_py313_compat.patch
       # petsc >= 3.25 Fortran modules export interfaces that clash with aster_petsc_module.F90
       - patches/petsc_3_25_compat.patch
+      # jexnum returns a character(len=32): a 24-char buffer overflows the stack
+      # (caught by the stack protector on osx-arm64 in getLocatedComponent)
+      - patches/jexnum_result_buffer_size.patch
       # Windows: MSVC (clang-cl) + Intel ifx toolchain, .def exports and pybind11 proxy modules
       - if: win
         then:
           - patches/windows_msvc_ifx.patch
           # 18.1.9+: catalo/wscript expands LD_PRELOAD with 'sh -c'
           - patches/windows_catalo_no_sh.patch
+      # macOS: two-level namespace (shared COMMON blocks, libpython, rpaths, install names),
+      # .dylib extension, libc++ missing includes
+      - if: osx
+        then:
+          - patches/osx_arm64.patch
   # code_aster prerequisites sources (only homard is built from it); 18.0.2+ requires version 20251026
   # https://gitlab.com/codeaster-opensource-documentation/opensource-installation-development/-/blob/main/devel/changelog.md
-  - if: unix
+  # homard is only provided as Linux x86-64 executables
+  - if: linux
     then:
       url: https://gitlab.com/api/v4/projects/codeaster-opensource-documentation%2Fopensource-installation-development/packages/generic/codeaster-prerequisites/20251026/codeaster-prerequisites-20251026-oss.tar.gz
       sha256: e450bbbee0047cf17f6f9423400a7ac83fc633e6e62e596111825016e945e7df
@@ -45,7 +54,8 @@ source:
 build:
   number: ${{ build_num }}
   # Windows: sequential only (no MPI MUMPS/PETSc build for ifx)
-  skip: osx or (win and mpi != 'nompi') or (python_impl == 'pypy')
+  # macOS: Apple Silicon only (not tested on osx-64)
+  skip: (osx and not arm64) or (win and mpi != 'nompi') or (python_impl == 'pypy')
 
 outputs:
   - package:
@@ -121,12 +131,16 @@ outputs:
             # host interpreter. Without this, CFG_EXT is 'yaml' but the build
             # stage raises "NameError: name 'yaml' is not defined".
             - pyyaml
-        - waf ==2.1.5
+        # macOS: no waf 2.1.5 package, the waf.engine bundled in the sources is used
+        - if: not osx
+          then: waf ==2.1.5
         - if: "mpi != 'nompi'"
           then: ${{ mpi }}
       host:
         - python
         - numpy
+        - if: osx
+          then: llvm-openmp
         - libboost-devel
         - if: unix
           then:
@@ -149,8 +163,9 @@ outputs:
         - scotch
         - mfront
         - mgis
-        # miss3d (CALC_MISS) on win-64 is an old flang-5/m2w64 build, incompatible with the ifx stack
-        - if: unix
+        # miss3d (CALC_MISS) on win-64 is an old flang-5/m2w64 build, incompatible with the ifx stack;
+        # not available on osx-arm64
+        - if: linux
           then: miss3d
         - metis
         - hdf5 >=1.14 *${{ mpi }}*
@@ -181,7 +196,7 @@ outputs:
       run:
         - ${{ pin_compatible('mgis', upper_bound='x.x') }}
         - ${{ pin_compatible('mfront', upper_bound='x.x.x') }}
-        - if: unix
+        - if: linux
           then: ${{ pin_compatible('miss3d', upper_bound='x.x') }}
         - ${{ pin_compatible('medcoupling', upper_bound='x.x') }}
         - ${{ pin_compatible('libmed', upper_bound='x.x') }}
@@ -268,11 +283,14 @@ outputs:
                 - ${{ compiler('fortran') }}
                 - cmake
             script:
-              - if: unix
+              - if: linux
                 then: run_ctest --testdir=astest -R 'forma01a|sslp114a|mumps05a|mumps01a|umat001a|zzzz121a' --resutest=${{ env.get("OUTPUT_DIR", default="temp/seq") }}/${{ mpi }} --clean
+              # zzzz121a uses HOMARD (MACR_INFO_MAIL), which is only available on linux
+              - if: osx
+                then: run_ctest --testdir=astest -R 'forma01a|sslp114a|mumps05a|mumps01a|umat001a' --resutest=${{ env.get("OUTPUT_DIR", default="temp/seq") }}/${{ mpi }} --clean
               # cmd.exe: the -R regex must be double-quoted
-              # zzzz121a uses HOMARD (MACR_INFO_MAIL), which is only built on unix
-                else: run_ctest --testdir=astest -R "forma01a|sslp114a|mumps05a|mumps01a|umat001a" --resutest=${{ env.get("OUTPUT_DIR", default="temp/seq") }}/${{ mpi }} --clean
+              - if: win
+                then: run_ctest --testdir=astest -R "forma01a|sslp114a|mumps05a|mumps01a|umat001a" --resutest=${{ env.get("OUTPUT_DIR", default="temp/seq") }}/${{ mpi }} --clean
 
 about:
   license: GPL-3.0-only AND CECILL-C AND Apache-2.0 AND LGPL-3.0-only

@@ -1,0 +1,358 @@
+diff --git a/bibc/utilitai/mempid.c b/bibc/utilitai/mempid.c
+index 8f8a56ef1f..d80f0efabf 100644
+--- a/bibc/utilitai/mempid.c
++++ b/bibc/utilitai/mempid.c
+@@ -35,6 +35,9 @@
+ #include <sys/sysctl.h>
+ #include <sys/user.h>
+ 
++#elif defined ASTER_PLATFORM_DARWIN
++#include <mach/mach.h>
++
+ #elif defined ASTER_PLATFORM_MINGW
+ #include <windows.h>
+ #
+@@ -46,13 +49,6 @@
+  * It returns VmSize and VmPeak.
+  */
+ 
+-/*
+- * OS X does not support retrieving memory consumptions through /proc or kvm library
+- */
+-#ifdef ASTER_PLATFORM_DARWIN
+-#define ASTER_DISABLE_MEMORY_STATS
+-#endif
+-
+ /*
+  * If ASTER_DISABLE_MEMORY_STATS, it always return 0
+  */
+@@ -113,6 +109,26 @@ ASTERINTEGER DEFP( MEMPID, mempid, ASTERINTEGER *val ) {
+     return 0;
+ }
+ 
++#elif defined ASTER_PLATFORM_DARWIN
++/*
++ * OS X does not support /proc or kvm library: use the physical footprint given by mach
++ * (as shown by the Activity Monitor). The resident size includes the pages freed by malloc
++ * but not yet reclaimed and the virtual size includes the shared regions.
++ */
++ASTERINTEGER DEFP( MEMPID, mempid, ASTERINTEGER *val ) {
++    task_vm_info_data_t info;
++    mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
++    if ( task_info( mach_task_self(), TASK_VM_INFO, (task_info_t)&info, &count ) !=
++         KERN_SUCCESS ) {
++        return -1;
++    }
++    /* VmSize */
++    val[0] = (ASTERINTEGER)( info.phys_footprint / 1024 );
++    /* VmPeak */
++    val[1] = (ASTERINTEGER)( info.ledger_phys_footprint_peak / 1024 );
++    return 0;
++}
++
+ #elif defined ASTER_PLATFORM_MINGW
+ ASTERINTEGER DEFP( MEMPID, mempid, ASTERINTEGER *val ) {
+     PROCESS_MEMORY_COUNTERS pmc; // PROCESS_MEMORY_COUNTERS_EX is the same but with one additional
+diff --git a/bibc/wscript b/bibc/wscript
+index bdf07ad620..7894a38dfb 100644
+--- a/bibc/wscript
++++ b/bibc/wscript
+@@ -132,7 +132,7 @@ def post_install_links(ctx):
+ 
+     extlib = "so"
+     mods = ["aster", "aster_core", "aster_fonctions"]
+-    libaster = "libaster.so"
++    libaster = ctx.env.cshlib_PATTERN % "aster"
+     if ctx.env.ASTER_PLATFORM_MINGW:
+         extlib = "pyd"
+         mods.extend(["libaster", "libAsterGC"])
+@@ -155,6 +155,17 @@ def post_install_links(ctx):
+             os.symlink(libaster_path.name, linkpath)
+             Logs.info(f"Created symlink: {linkpath}")
+ 
++    # macOS: python does not import '.dylib' files, 'import libaster/libAsterGC' need '.so'
++    if ctx.env.DEST_OS == "darwin":
++        for name in ("aster", "AsterGC"):
++            target = ctx.env.cxxshlib_PATTERN % name
++            linkpath = asterlibdir / f"lib{name}.{extlib}"
++            if (asterlibdir / target).exists():
++                if linkpath.is_symlink() or linkpath.exists():
++                    linkpath.unlink()
++                os.symlink(target, linkpath)
++                Logs.info(f"Created symlink: {linkpath}")
++
+ 
+ def build_libbibc(self, env):
+     use = [
+diff --git a/bibcxx/MFront/MFrontBehaviour.cxx b/bibcxx/MFront/MFrontBehaviour.cxx
+index e525408beb..3dbb5c11c1 100644
+--- a/bibcxx/MFront/MFrontBehaviour.cxx
++++ b/bibcxx/MFront/MFrontBehaviour.cxx
+@@ -173,7 +173,10 @@ char **getTridimMaterialPropertiesNames( const char *behav, unsigned int *size )
+     std::string bname = toLower( behav );
+     bname.insert( 0, "aster" );
+ 
+-#ifdef ASTER_PLATFORM_POSIX
++#if defined ASTER_PLATFORM_DARWIN
++    MFrontBehaviour behaviour( "Tridimensional",
++                               "lib" + std::string( ASTER_BEHAVIOUR_LIB ) + ".dylib", bname.c_str() );
++#elif defined ASTER_PLATFORM_POSIX
+     MFrontBehaviour behaviour( "Tridimensional", "lib" + std::string( ASTER_BEHAVIOUR_LIB ) + ".so",
+                                bname.c_str() );
+ #else
+diff --git a/bibcxx/Meshes/ConnectionMesh.cxx b/bibcxx/Meshes/ConnectionMesh.cxx
+index 12ccdb01e4..9ab52e2041 100644
+--- a/bibcxx/Meshes/ConnectionMesh.cxx
++++ b/bibcxx/Meshes/ConnectionMesh.cxx
+@@ -641,7 +641,7 @@ VectorLong ConnectionMesh::getCells( const std::string name ) const {
+ VectorLong ConnectionMesh::getCells( const VectorString &names ) const {
+ 
+     if ( names.empty() ) {
+-        return irange( long( 0 ), long( getNumberOfCells() - 1 ) );
++        return irange( ASTERINTEGER( 0 ), ASTERINTEGER( getNumberOfCells() - 1 ) );
+     }
+ 
+     std::vector< VectorLong > cells;
+diff --git a/bibcxx/Meshes/MeshBalancer.cxx b/bibcxx/Meshes/MeshBalancer.cxx
+index fc6df6554c..ff091c66a3 100644
+--- a/bibcxx/Meshes/MeshBalancer.cxx
++++ b/bibcxx/Meshes/MeshBalancer.cxx
+@@ -235,7 +235,7 @@ ParallelMeshPtr MeshBalancer::applyBalancingStrategy( const VectorInt &newLocalN
+     }
+ 
+     auto globNodeNumVect2 = globNodeNumVect;
+-    std::for_each( globNodeNumVect2.begin(), globNodeNumVect2.end(), &decrement< long int > );
++    std::for_each( globNodeNumVect2.begin(), globNodeNumVect2.end(), &decrement< ASTERINTEGER > );
+ 
+     convertLastGhostLayerToLocal( globNodeNumVect2 );
+ 
+diff --git a/bibcxx/ParallelUtilities/MeshConnectionGraph.cxx b/bibcxx/ParallelUtilities/MeshConnectionGraph.cxx
+index 3803473777..5962860170 100644
+--- a/bibcxx/ParallelUtilities/MeshConnectionGraph.cxx
++++ b/bibcxx/ParallelUtilities/MeshConnectionGraph.cxx
+@@ -250,7 +250,7 @@ bool MeshConnectionGraph::debugCheck() const {
+ 
+         for ( int j = 0; j < edgeNb; ++j ) {
+             const auto curNodeId = _edges[startVertId + j];
+-            const int procId = std::min( curNodeId / nbNodes0, (long int)nbProcs - 1 );
++            const int procId = std::min( curNodeId / nbNodes0, (ASTERINTEGER)nbProcs - 1 );
+             nodeConnex.insert( curNodeId );
+             if ( curNodeId >= startIndex && curNodeId < endIndex ) {
+                 if ( procId != rank ) {
+diff --git a/bibcxx/Utilities/Tools.h b/bibcxx/Utilities/Tools.h
+index 1d4bda222d..8bee2130b4 100644
+--- a/bibcxx/Utilities/Tools.h
++++ b/bibcxx/Utilities/Tools.h
+@@ -28,6 +28,7 @@
+ 
+ #include <algorithm>
+ #include <iomanip>
++#include <iterator>
+ #include <sstream>
+ 
+ std::string strip( const std::string &str, const std::string &whitespace = " \t" );
+diff --git a/bibcxx/wscript b/bibcxx/wscript
+index 651196d1ba..f30fa05aff 100644
+--- a/bibcxx/wscript
++++ b/bibcxx/wscript
+@@ -96,7 +96,8 @@ def build(self):
+ @Configure.conf
+ def check_bibcxx_depends(self):
+     """check dependencies of bibcxx"""
+-    self.check_cxx(uselib_store="CXX", lib="stdc++")
++    # macOS: the C++ standard library is libc++
++    self.check_cxx(uselib_store="CXX", lib="c++" if self.env.DEST_OS == "darwin" else "stdc++")
+     if self.env.CC_NAME.lower() == "gcc" and int(self.env.CC_VERSION[0] or 0) < 9:
+         self.check_cxx(uselib_store="CXX", lib="stdc++fs")
+ 
+diff --git a/bibfor/wscript b/bibfor/wscript
+index a65a680ab4..483d4c1208 100644
+--- a/bibfor/wscript
++++ b/bibfor/wscript
+@@ -76,7 +76,7 @@ def build(self):
+         install_path=lib_install_path,
+     )
+     # ... except for subroutines linked against external libraries
+-    self(
++    ext = self(
+         features=("fc fcstlib" if self.env.ASTER_PLATFORM_MINGW else "fc fcshlib"),
+         name="asterbibfor_ext",
+         target="bibfor_ext",
+@@ -87,6 +87,11 @@ def build(self):
+         env=env.derive(),
+         install_path=lib_install_path,
+     )
++    if self.env.DEST_OS == "darwin":
++        # macOS: share the COMMON blocks (jeveux) defined in bibfor instead of
++        # defining a second copy in bibfor_ext (two-level namespace)
++        ext.linkflags = ["-Wl,-commons,use_dylibs"]
++        ext.link_with_dylib = "asterbibfor"
+ 
+ 
+ ###############################################################################
+diff --git a/code_aster/Helpers/MGISHelper.py b/code_aster/Helpers/MGISHelper.py
+index 04d4e379ab..f5752eca4a 100644
+--- a/code_aster/Helpers/MGISHelper.py
++++ b/code_aster/Helpers/MGISHelper.py
+@@ -20,6 +20,7 @@
+ import os
+ import os.path as osp
+ import shutil
++import sys
+ import tempfile
+ from subprocess import call
+ 
+@@ -28,6 +29,8 @@ from ..Messages import UTMESS
+ from ..Objects import MGISBehaviour
+ from ..Utilities import ExecutionParameter, config, logger
+ 
++SHLIB_EXT = ".dylib" if sys.platform == "darwin" else ".so"
++
+ 
+ class MGISBuilder:
+     """Object to easily create MGISBehaviour objects from '.mfront' user file,
+@@ -44,7 +47,7 @@ class MGISBuilder:
+             behaviour_name (str): Name of the behaviour.
+         """
+         libpath = osp.join(
+-            os.environ["ASTER_LIBDIR"], "lib" + config["ASTER_BEHAVIOUR_LIB"] + ".so"
++            os.environ["ASTER_LIBDIR"], "lib" + config["ASTER_BEHAVIOUR_LIB"] + SHLIB_EXT
+         )
+         return MGISBuilder.from_library(behaviour_name, libpath)
+ 
+@@ -111,7 +114,7 @@ class MGISBuilder:
+         logger.debug("Execute command %r", cmd)
+         try:
+             call(cmd)
+-            libname = "libBehaviour.so"
++            libname = "libBehaviour" + SHLIB_EXT
+             filename = osp.join("src", libname)
+             if not osp.exists(filename):
+                 UTMESS("F", "MFRONT_4", valk=libname)
+diff --git a/mfront/wscript b/mfront/wscript
+index 7d9b9f064f..c2160b0b0a 100644
+--- a/mfront/wscript
++++ b/mfront/wscript
+@@ -228,6 +228,8 @@ def check_cxx11_abi(self):
+     libext = ".so"
+     if self.env.ASTER_PLATFORM_MINGW:
+         libext = ".dll"
++    elif self.env.DEST_OS == "darwin":
++        libext = ".dylib"
+ 
+     libname = "./libTFELUtilities" + self.env.TFELSUFFIX + libext
+     symbol = "replace_all"
+@@ -259,7 +261,7 @@ def check_mfront_obsolete_source(self):
+     src = self.path.get_src().abspath()
+     # clean obsolete behaviours (from a previous build)
+     bld, mfront = osp.split(self.path.get_bld().abspath())
+-    excl = ["libAsterMFrOfficial.so", "libAsterMFrOfficialDebug.so", "include"]
++    excl = ["libAsterMFrOfficial.", "libAsterMFrOfficialDebug.", "include"]
+     for variant in ("debug", "release"):
+         build = osp.join(bld, variant, mfront)
+         if osp.exists(build):
+diff --git a/waftools/ext_aster.py b/waftools/ext_aster.py
+index 91ce24e6a8..309eaf9f89 100644
+--- a/waftools/ext_aster.py
++++ b/waftools/ext_aster.py
+@@ -338,6 +338,58 @@ def configure(self):
+         self.end_msg("enabled")
+ 
+ 
++@Configure.conf
++def check_darwin_shlib(self):
++    """macOS: the shared libraries have circular dependencies (bibfor <-> bibc/bibcxx)
++    and symbols resolved when libaster is loaded, as allowed by ELF on Linux.
++    Must be called once the compilers are loaded."""
++    if self.env.DEST_OS != "darwin":
++        return
++    self.start_msg("Setting up macOS shared libraries")
++    flags = ["-Wl,-undefined,dynamic_lookup"]
++    for var in ("LINKFLAGS_cshlib", "LINKFLAGS_cxxshlib", "LINKFLAGS_fcshlib"):
++        self.env.append_unique(var, flags)
++    # equivalent of '--as-needed' that would drop the libraries needed by libaster
++    for var in ("LINKFLAGS", "LDFLAGS"):
++        self.env[var] = [i for i in Utils.to_list(self.env[var]) if i != "-Wl,-dead_strip_dylibs"]
++    self.end_msg(flags)
++
++
++@TaskGen.feature("c", "cxx", "fc")
++@TaskGen.after_method("propagate_uselib_vars")
++def darwin_rpath_origin(self):
++    """macOS: '$ORIGIN' is spelled '@loader_path'.
++    Libraries installed out of ASTERLIBDIR (in site-packages) also need to find
++    those of ASTERLIBDIR, as LD_LIBRARY_PATH does on Linux."""
++    if self.env.DEST_OS == "darwin" and self.env.RPATH:
++        self.env.RPATH = [i.replace("$ORIGIN", "@loader_path") for i in self.env.RPATH]
++        inst = getattr(self, "install_path", None)
++        libdir = self.env.ASTERLIBDIR
++        if isinstance(inst, str) and libdir and osp.normpath(inst) != osp.normpath(libdir):
++            self.env.append_unique("RPATH", "@loader_path/" + osp.relpath(libdir, inst))
++
++
++@TaskGen.feature("cshlib", "cxxshlib", "fcshlib")
++@TaskGen.after_method("apply_link")
++def darwin_install_name(self):
++    """macOS: identify the libraries by '@rpath/<name>' instead of their build path."""
++    if self.env.DEST_OS == "darwin" and getattr(self, "link_task", None):
++        name = self.link_task.outputs[0].name
++        self.env.append_value("LINKFLAGS", ["-Wl,-install_name,@rpath/" + name])
++
++
++@TaskGen.feature("cshlib", "cxxshlib", "fcshlib")
++@TaskGen.after_method("apply_link")
++def darwin_link_with_dylib(self):
++    """Add the library of another task generator as link input, without inheriting
++    its 'use' (compilation flags)."""
++    name = getattr(self, "link_with_dylib", None)
++    if name:
++        other = self.bld.get_tgen_by_name(name)
++        other.post()
++        self.link_task.inputs.append(other.link_task.outputs[0])
++
++
+ def build(self):
+     _enable_wine_wrapping(self)
+     if Logs.verbose < 1:
+diff --git a/waftools/petsc.py b/waftools/petsc.py
+index 52a679fe8a..65baa97088 100644
+--- a/waftools/petsc.py
++++ b/waftools/petsc.py
+@@ -102,7 +102,8 @@ def check_petsc(self):
+     if opts.petsc_libs is None:
+         opts.petsc_libs = "petsc"
+         # add optional libs
+-        optlibs = "ml HYPRE superlu slepc hpddm_petsc stdc++"
++        optlibs = "ml HYPRE superlu slepc hpddm_petsc "
++        optlibs += "c++" if self.env.DEST_OS == "darwin" else "stdc++"
+     if opts.petsc_libs:
+         self.check_petsc_libs(optlibs)
+ 
+diff --git a/waftools/python_cfg.py b/waftools/python_cfg.py
+index d33ca927be..c4dbe7ca33 100644
+--- a/waftools/python_cfg.py
++++ b/waftools/python_cfg.py
+@@ -48,6 +48,11 @@ def check_python(self):
+         for lang in ("CFLAGS", "CXXFLAGS"):
+             for feat in ("PYEMBED", "PYEXT"):
+                 self.env[lang + "_" + feat] = []
++    if self.env.DEST_OS == "darwin":
++        # libraries are loaded by the interpreter: linking libpython would load a second,
++        # uninitialized, copy of python (two-level namespace); symbols are resolved
++        # at runtime ('-undefined dynamic_lookup')
++        self.env["LIB_PYEMBED"] = [i for i in self.env["LIB_PYEMBED"] if not i.startswith("python")]
+     for lang in ("CFLAGS", "CXXFLAGS", "LINKFLAGS"):
+         for feat in ("PYEMBED", "PYEXT"):
+             self.remove_flags(lang + "_" + feat, "^-O[0-9]")
+diff --git a/wscript b/wscript
+index bab47249bb..5deb522fd2 100644
+--- a/wscript
++++ b/wscript
+@@ -317,6 +317,7 @@ def configure(self):
+ 
+     self.load("parallel", tooldir="waftools")
+     self.check_platform()
++    self.check_darwin_shlib()
+     self.set_installdirs()
+     self.load("python_cfg", tooldir="waftools")
+     # keep compatibility for as_run
